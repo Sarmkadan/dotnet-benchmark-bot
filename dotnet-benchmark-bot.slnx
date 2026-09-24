@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/dotnet-benchmark-bot/dotnet-benchmark-bot.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/dotnet-benchmark-bot.Tests/dotnet-benchmark-bot.Tests.csproj" />
+  </Folder>
+</Solution>
