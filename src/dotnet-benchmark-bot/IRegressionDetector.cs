@@ -58,5 +58,61 @@ public sealed class ThresholdRegressionDetector : IRegressionDetector
         IReadOnlyList<BenchmarkResult> baseline,
         IReadOnlyList<BenchmarkResult> candidate,
         RegressionThresholds? thresholds = null)
-        => throw new NotImplementedException();
+    {
+        thresholds ??= new RegressionThresholds();
+
+        var baselineByName = baseline.ToDictionary(r => r.FullName, StringComparer.Ordinal);
+        var candidateByName = candidate.ToDictionary(r => r.FullName, StringComparer.Ordinal);
+
+        var names = baselineByName.Keys.Union(candidateByName.Keys, StringComparer.Ordinal).ToList();
+        names.Sort(StringComparer.Ordinal);
+
+        var comparisons = new List<BenchmarkComparison>(names.Count);
+        foreach (var name in names)
+        {
+            baselineByName.TryGetValue(name, out var baseResult);
+            candidateByName.TryGetValue(name, out var candResult);
+
+            if (baseResult is null)
+            {
+                comparisons.Add(new BenchmarkComparison(
+                    name, null, candResult, double.NaN, null, RegressionVerdict.Added));
+                continue;
+            }
+
+            if (candResult is null)
+            {
+                comparisons.Add(new BenchmarkComparison(
+                    name, baseResult, null, double.NaN, null, RegressionVerdict.Removed));
+                continue;
+            }
+
+            var meanRatio = baseResult.MeanNanoseconds == 0
+                ? (candResult.MeanNanoseconds > 0 ? double.PositiveInfinity : 1.0)
+                : candResult.MeanNanoseconds / baseResult.MeanNanoseconds;
+
+            double? allocationRatio = baseResult.AllocatedBytes is { } baseBytes
+                && candResult.AllocatedBytes is { } candBytes
+                && baseBytes > 0
+                    ? (double)candBytes / baseBytes
+                    : null;
+
+            var verdict = Classify(baseResult, candResult, meanRatio, allocationRatio, thresholds);
+            comparisons.Add(new BenchmarkComparison(
+                name, baseResult, candResult, meanRatio, allocationRatio, verdict));
+        }
+
+        return comparisons;
+    }
+
+    private static RegressionVerdict Classify(
+        BenchmarkResult baseline,
+        BenchmarkResult candidate,
+        double meanRatio,
+        double? allocationRatio,
+        RegressionThresholds thresholds)
+    {
+        // TODO: sigma gate + ratio thresholds
+        return RegressionVerdict.Unchanged;
+    }
 }
