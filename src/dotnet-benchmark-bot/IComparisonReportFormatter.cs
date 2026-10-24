@@ -69,8 +69,45 @@ public sealed class MarkdownComparisonReportFormatter : IComparisonReportFormatt
             return builder.ToString();
         }
 
-        builder.Append("| Benchmark | Baseline | Candidate | Ratio | Alloc | Verdict |\n");
-        builder.Append("| --- | ---: | ---: | ---: | ---: | --- |\n");
+        if (rows.Count <= options.CollapseAfterRows)
+        {
+            AppendTable(builder, rows);
+            return builder.ToString();
+        }
+
+        // Regressions stay visible above the fold; everything else goes into the collapsed block.
+        var regressed = rows.Where(r => r.Verdict == RegressionVerdict.Regressed).ToList();
+        var others = rows.Where(r => r.Verdict != RegressionVerdict.Regressed).ToList();
+
+        if (regressed.Count > 0)
+        {
+            builder.Append("### Regressions\n\n");
+            AppendTable(builder, regressed);
+
+            if (others.Count > 0)
+            {
+                builder.Append('\n');
+            }
+        }
+
+        if (others.Count > 0)
+        {
+            var summary = regressed.Count > 0
+                ? $"Show {others.Count} other benchmarks"
+                : $"Show {others.Count} benchmarks";
+
+            builder.Append("<details>\n<summary>").Append(summary).Append("</summary>\n\n");
+            AppendTable(builder, others);
+            builder.Append("\n</details>\n");
+        }
+
+        return builder.ToString();
+    }
+
+    private static void AppendTable(StringBuilder sb, IEnumerable<BenchmarkComparison> rows)
+    {
+        sb.Append("| Benchmark | Baseline | Candidate | Ratio | Alloc | Verdict |\n");
+        sb.Append("| --- | ---: | ---: | ---: | ---: | --- |\n");
 
         foreach (var row in rows)
         {
@@ -80,7 +117,7 @@ public sealed class MarkdownComparisonReportFormatter : IComparisonReportFormatt
             var ratio = DurationFormatter.FormatRatio(row.MeanRatio);
             var alloc = ByteSizeFormatter.FormatDelta(row.Baseline?.AllocatedBytes, row.Candidate?.AllocatedBytes);
 
-            builder.Append("| ")
+            sb.Append("| ")
                 .Append(name).Append(" | ")
                 .Append(baseline).Append(" | ")
                 .Append(candidate).Append(" | ")
@@ -88,8 +125,6 @@ public sealed class MarkdownComparisonReportFormatter : IComparisonReportFormatt
                 .Append(alloc).Append(" | ")
                 .Append(FormatVerdict(row.Verdict)).Append(" |\n");
         }
-
-        return builder.ToString();
     }
 
     private static string FormatVerdict(RegressionVerdict verdict) => verdict switch
