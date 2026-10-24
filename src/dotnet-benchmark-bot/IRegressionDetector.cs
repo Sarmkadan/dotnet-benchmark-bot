@@ -51,6 +51,21 @@ public interface IRegressionDetector
 /// <summary>
 /// Default <see cref="IRegressionDetector"/> using ratio thresholds with a sigma-based noise gate.
 /// </summary>
+/// <remarks>
+/// Classification per pair, in order:
+/// <list type="number">
+/// <item>The time delta is trusted only if <c>|candidate - baseline|</c> exceeds
+/// <see cref="RegressionThresholds.NoiseSigma"/> times the larger of the two standard deviations.</item>
+/// <item>An allocation increase above <see cref="RegressionThresholds.AllocationRegressionRatio"/> is
+/// <see cref="RegressionVerdict.Regressed"/> regardless of the noise gate.</item>
+/// <item>A trusted mean ratio above <see cref="RegressionThresholds.MeanRegressionRatio"/> (or infinite) is
+/// <see cref="RegressionVerdict.Regressed"/>; a trusted drop below
+/// <see cref="RegressionThresholds.MeanImprovementRatio"/> is <see cref="RegressionVerdict.Improved"/>.
+/// A NaN mean ratio is never trusted.</item>
+/// <item>Otherwise an allocation drop beyond <see cref="RegressionThresholds.AllocationRegressionRatio"/>
+/// is <see cref="RegressionVerdict.Improved"/>, and everything else is <see cref="RegressionVerdict.Unchanged"/>.</item>
+/// </list>
+/// </remarks>
 public sealed class ThresholdRegressionDetector : IRegressionDetector
 {
     /// <inheritdoc />
@@ -112,7 +127,40 @@ public sealed class ThresholdRegressionDetector : IRegressionDetector
         double? allocationRatio,
         RegressionThresholds thresholds)
     {
-        // TODO: sigma gate + ratio thresholds
-        return RegressionVerdict.Unchanged;
+        // Allocations are deterministic enough to report without the time noise gate.
+        var allocationVerdict = RegressionVerdict.Unchanged;
+        if (thresholds.AllocationRegressionRatio is { } allocationLimit && allocationRatio is { } allocRatio)
+        {
+            if (allocRatio - 1.0 > allocationLimit)
+            {
+                return RegressionVerdict.Regressed;
+            }
+
+            if (1.0 - allocRatio > allocationLimit)
+            {
+                allocationVerdict = RegressionVerdict.Improved;
+            }
+        }
+
+        var noise = thresholds.NoiseSigma * Math.Max(baseline.StdDevNanoseconds, candidate.StdDevNanoseconds);
+        var delta = candidate.MeanNanoseconds - baseline.MeanNanoseconds;
+        var trusted = Math.Abs(delta) > noise;
+
+        var timeVerdict = RegressionVerdict.Unchanged;
+        if (trusted && !double.IsNaN(meanRatio))
+        {
+            if (double.IsPositiveInfinity(meanRatio) || meanRatio - 1.0 > thresholds.MeanRegressionRatio)
+            {
+                timeVerdict = RegressionVerdict.Regressed;
+            }
+            else if (1.0 - meanRatio > thresholds.MeanImprovementRatio)
+            {
+                timeVerdict = RegressionVerdict.Improved;
+            }
+        }
+
+        return timeVerdict is RegressionVerdict.Regressed or RegressionVerdict.Improved
+            ? timeVerdict
+            : allocationVerdict;
     }
 }
