@@ -81,6 +81,36 @@ public sealed class JsonBenchmarkReportParser : IBenchmarkReportParser
     }
 
     /// <inheritdoc />
-    public Task<IReadOnlyList<BenchmarkResult>> ParseDirectoryAsync(string artifactsDirectory, CancellationToken cancellationToken = default)
-        => throw new NotImplementedException();
+    /// <exception cref="DirectoryNotFoundException">The artifacts directory does not exist.</exception>
+    public async Task<IReadOnlyList<BenchmarkResult>> ParseDirectoryAsync(string artifactsDirectory, CancellationToken cancellationToken = default)
+    {
+        if (!Directory.Exists(artifactsDirectory))
+        {
+            throw new DirectoryNotFoundException($"Benchmark artifacts directory not found: '{artifactsDirectory}'");
+        }
+
+        var reportFiles = Directory.EnumerateFiles(artifactsDirectory, "*-report-full.json", SearchOption.TopDirectoryOnly)
+            .OrderBy(path => Path.GetFileName(path), StringComparer.Ordinal)
+            .ToList();
+
+        var results = new List<BenchmarkResult>();
+        var seenFullNames = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var reportFile in reportFiles)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            await using var stream = new FileStream(reportFile, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize: 4096, useAsync: true);
+            foreach (var result in await ParseAsync(stream, cancellationToken))
+            {
+                // The first occurrence wins; later duplicates of the same benchmark are ignored.
+                if (seenFullNames.Add(result.FullName))
+                {
+                    results.Add(result);
+                }
+            }
+        }
+
+        return results;
+    }
 }
