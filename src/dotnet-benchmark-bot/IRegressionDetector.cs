@@ -28,6 +28,35 @@ public sealed class RegressionThresholds
     /// Guards against flagging noisy benchmarks. Default 2.0.
     /// </summary>
     public double NoiseSigma { get; init; } = 2.0;
+
+    /// <summary>
+    /// Verifies that every threshold is a non-negative number.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <see cref="MeanRegressionRatio"/>, <see cref="MeanImprovementRatio"/>, <see cref="AllocationRegressionRatio"/>
+    /// (when set), or <see cref="NoiseSigma"/> is negative or NaN.
+    /// </exception>
+    public void Validate()
+    {
+        ThrowIfInvalid(MeanRegressionRatio, nameof(MeanRegressionRatio));
+        ThrowIfInvalid(MeanImprovementRatio, nameof(MeanImprovementRatio));
+
+        if (AllocationRegressionRatio is { } allocationLimit)
+        {
+            ThrowIfInvalid(allocationLimit, nameof(AllocationRegressionRatio));
+        }
+
+        ThrowIfInvalid(NoiseSigma, nameof(NoiseSigma));
+    }
+
+    private static void ThrowIfInvalid(double value, string paramName)
+    {
+        // Negated comparison so NaN fails the check as well.
+        if (!(value >= 0))
+        {
+            throw new ArgumentOutOfRangeException(paramName, value, "Threshold must be a non-negative number.");
+        }
+    }
 }
 
 /// <summary>
@@ -42,6 +71,9 @@ public interface IRegressionDetector
     /// <param name="candidate">Measurements from the PR head.</param>
     /// <param name="thresholds">Thresholds to apply; <see langword="null"/> uses defaults.</param>
     /// <returns>One comparison per benchmark present in either run, ordered by <see cref="BenchmarkComparison.FullName"/>.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="baseline"/> or <paramref name="candidate"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">A <see cref="BenchmarkResult"/> in <paramref name="baseline"/> or <paramref name="candidate"/> has a null or empty <see cref="BenchmarkResult.FullName"/>.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="thresholds"/> fails <see cref="RegressionThresholds.Validate"/>.</exception>
     IReadOnlyList<BenchmarkComparison> Compare(
         IReadOnlyList<BenchmarkResult> baseline,
         IReadOnlyList<BenchmarkResult> candidate,
@@ -74,7 +106,14 @@ public sealed class ThresholdRegressionDetector : IRegressionDetector
         IReadOnlyList<BenchmarkResult> candidate,
         RegressionThresholds? thresholds = null)
     {
+        ArgumentNullException.ThrowIfNull(baseline);
+        ArgumentNullException.ThrowIfNull(candidate);
+
         thresholds ??= new RegressionThresholds();
+        thresholds.Validate();
+
+        ValidateFullNames(baseline, nameof(baseline));
+        ValidateFullNames(candidate, nameof(candidate));
 
         var baselineByName = baseline.ToDictionary(r => r.FullName, StringComparer.Ordinal);
         var candidateByName = candidate.ToDictionary(r => r.FullName, StringComparer.Ordinal);
@@ -118,6 +157,17 @@ public sealed class ThresholdRegressionDetector : IRegressionDetector
         }
 
         return comparisons;
+    }
+
+    private static void ValidateFullNames(IReadOnlyList<BenchmarkResult> results, string paramName)
+    {
+        foreach (var result in results)
+        {
+            if (string.IsNullOrEmpty(result.FullName))
+            {
+                throw new ArgumentException($"Every entry in {paramName} must have a non-empty FullName.", paramName);
+            }
+        }
     }
 
     private static RegressionVerdict Classify(
