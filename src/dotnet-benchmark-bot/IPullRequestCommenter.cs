@@ -1,5 +1,7 @@
 using System.Net.Http.Headers;
+using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace DotnetBenchmarkBot;
 
@@ -70,6 +72,69 @@ public sealed class GitHubPullRequestCommenter : IPullRequestCommenter
     }
 
     /// <inheritdoc />
-    public Task<Uri> UpsertCommentAsync(PullRequestRef pullRequest, string body, string marker, CancellationToken cancellationToken = default)
-        => throw new NotImplementedException();
+    public async Task<Uri> UpsertCommentAsync(PullRequestRef pullRequest, string body, string marker, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(pullRequest);
+        ArgumentNullException.ThrowIfNull(body);
+        ArgumentException.ThrowIfNullOrEmpty(marker);
+
+        // Keep the marker in the body so the next run can find this comment again.
+        var payloadBody = body.Contains(marker, StringComparison.Ordinal) ? body : marker + "\n" + body;
+
+        var existing = await FindExistingCommentAsync(pullRequest, marker, cancellationToken);
+        var comment = existing is null
+            ? await SendAsync<IssueComment>(HttpMethod.Post, $"repos/{pullRequest.Owner}/{pullRequest.Repository}/issues/{pullRequest.Number}/comments", payloadBody, cancellationToken)
+            : await SendAsync<IssueComment>(HttpMethod.Patch, $"repos/{pullRequest.Owner}/{pullRequest.Repository}/issues/comments/{existing.Id}", payloadBody, cancellationToken);
+
+        return new Uri(comment.HtmlUrl);
+    }
+
+    private async Task<IssueComment?> FindExistingCommentAsync(PullRequestRef pullRequest, string marker, CancellationToken cancellationToken)
+    {
+        const int pageSize = 100;
+        var commentsUrl = $"repos/{pullRequest.Owner}/{pullRequest.Repository}/issues/{pullRequest.Number}/comments";
+
+        for (var page = 1; ; page++)
+        {
+            var comments = await SendAsync<List<IssueComment>>(HttpMethod.Get, $"{commentsUrl}?per_page={pageSize}&page={page}", null, cancellationToken);
+
+            var match = comments.FirstOrDefault(c => (c.Body ?? string.Empty).Contains(marker, StringComparison.Ordinal));
+            if (match is not null)
+            {
+                return match;
+            }
+
+            if (comments.Count < pageSize)
+            {
+                return null;
+            }
+        }
+    }
+
+    private async Task<T> SendAsync<T>(HttpMethod method, string url, string? body, CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(method, url);
+        if (body is not null)
+        {
+            request.Content = JsonContent.Create(new { body }, options: s_json);
+        }
+
+        try
+        {
+            using var response = await _httpClient.SendAsync(request, cancellationToken);
+            response.EnsureSuccessStatusCode();
+
+            var result = await response.Content.ReadFromJsonAsync<T>(s_json, cancellationToken);
+            return result ?? throw new InvalidOperationException($"GitHub API returned an empty body for {method} {url}.");
+        }
+        catch (HttpRequestException ex)
+        {
+            throw new HttpRequestException($"GitHub API request {method} {url} failed with status {(int?)ex.StatusCode}: {ex.Message}", ex, ex.StatusCode);
+        }
+    }
+
+    private sealed record IssueComment(
+        [property: JsonPropertyName("id")] long Id,
+        [property: JsonPropertyName("body")] string Body,
+        [property: JsonPropertyName("html_url")] string HtmlUrl);
 }
