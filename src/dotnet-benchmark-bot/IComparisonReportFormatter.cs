@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace DotnetBenchmarkBot;
 
 /// <summary>
@@ -42,5 +44,61 @@ public sealed class MarkdownComparisonReportFormatter : IComparisonReportFormatt
 {
     /// <inheritdoc />
     public string Format(IReadOnlyList<BenchmarkComparison> comparisons, ReportFormatOptions? options = null)
-        => throw new NotImplementedException();
+    {
+        ArgumentNullException.ThrowIfNull(comparisons);
+        options ??= new ReportFormatOptions();
+
+        var builder = new StringBuilder();
+
+        builder.Append(options.Marker).Append('\n');
+
+        if (!string.IsNullOrWhiteSpace(options.Title))
+        {
+            builder.Append("## ").Append(options.Title).Append("\n\n");
+        }
+
+        builder.Append(BenchmarkComparisonSummary.FromComparisons(comparisons).ToSummaryLine()).Append("\n\n");
+
+        var rows = comparisons
+            .Where(c => !(options.HideUnchanged && c.Verdict == RegressionVerdict.Unchanged))
+            .ToList();
+
+        if (rows.Count == 0)
+        {
+            builder.Append("_No measurable changes._\n");
+            return builder.ToString();
+        }
+
+        builder.Append("| Benchmark | Baseline | Candidate | Ratio | Alloc | Verdict |\n");
+        builder.Append("| --- | ---: | ---: | ---: | ---: | --- |\n");
+
+        foreach (var row in rows)
+        {
+            var name = "`" + row.FullName.Replace("|", "\\|", StringComparison.Ordinal) + "`";
+            var baseline = row.Baseline is null ? "-" : DurationFormatter.FormatNanoseconds(row.Baseline.MeanNanoseconds);
+            var candidate = row.Candidate is null ? "-" : DurationFormatter.FormatNanoseconds(row.Candidate.MeanNanoseconds);
+            var ratio = DurationFormatter.FormatRatio(row.MeanRatio);
+            var alloc = ByteSizeFormatter.FormatDelta(row.Baseline?.AllocatedBytes, row.Candidate?.AllocatedBytes);
+
+            builder.Append("| ")
+                .Append(name).Append(" | ")
+                .Append(baseline).Append(" | ")
+                .Append(candidate).Append(" | ")
+                .Append(ratio).Append(" | ")
+                .Append(alloc).Append(" | ")
+                .Append(FormatVerdict(row.Verdict)).Append(" |\n");
+        }
+
+        return builder.ToString();
+    }
+
+    private static string FormatVerdict(RegressionVerdict verdict) => verdict switch
+    {
+        RegressionVerdict.Regressed => $":red_circle: {verdict}",
+        RegressionVerdict.Improved => $":green_circle: {verdict}",
+        RegressionVerdict.Added => $":new: {verdict}",
+        RegressionVerdict.Removed => $":wastebasket: {verdict}",
+        RegressionVerdict.Unchanged => $":white_circle: {verdict}",
+        _ => throw new ArgumentOutOfRangeException(nameof(verdict), verdict, "Unknown regression verdict."),
+    };
 }
