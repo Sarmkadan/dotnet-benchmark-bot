@@ -8,10 +8,53 @@ namespace DotnetBenchmarkBot;
 /// <summary>
 /// Identifies a pull request on a GitHub repository.
 /// </summary>
-/// <param name="Owner">Repository owner (user or organization).</param>
-/// <param name="Repository">Repository name.</param>
-/// <param name="Number">Pull request number.</param>
-public sealed record PullRequestRef(string Owner, string Repository, int Number);
+public sealed record PullRequestRef
+{
+    /// <summary>
+    /// Creates a validated reference to a pull request.
+    /// </summary>
+    /// <param name="owner">Repository owner (user or organization). Must be non-empty and must not contain <c>/</c>.</param>
+    /// <param name="repository">Repository name. Must be non-empty and must not contain <c>/</c>.</param>
+    /// <param name="number">Pull request number. Must be at least 1.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="owner"/> or <paramref name="repository"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException"><paramref name="owner"/> or <paramref name="repository"/> is empty, whitespace, or contains <c>/</c>.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="number"/> is less than 1.</exception>
+    public PullRequestRef(string owner, string repository, int number)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(owner);
+        ArgumentException.ThrowIfNullOrWhiteSpace(repository);
+        ArgumentOutOfRangeException.ThrowIfLessThan(number, 1);
+
+        if (owner.Contains('/', StringComparison.Ordinal))
+        {
+            throw new ArgumentException("Owner must not contain '/'.", nameof(owner));
+        }
+
+        if (repository.Contains('/', StringComparison.Ordinal))
+        {
+            throw new ArgumentException("Repository must not contain '/'.", nameof(repository));
+        }
+
+        Owner = owner;
+        Repository = repository;
+        Number = number;
+    }
+
+    /// <summary>
+    /// Repository owner (user or organization).
+    /// </summary>
+    public string Owner { get; init; }
+
+    /// <summary>
+    /// Repository name.
+    /// </summary>
+    public string Repository { get; init; }
+
+    /// <summary>
+    /// Pull request number.
+    /// </summary>
+    public int Number { get; init; }
+}
 
 /// <summary>
 /// Posts or updates a benchmark comparison comment on a pull request.
@@ -43,8 +86,13 @@ public sealed class GitHubPullRequestCommenter : IPullRequestCommenter
     /// </summary>
     /// <param name="httpClient">Client used for API calls. Base address defaults to <c>https://api.github.com</c> when unset.</param>
     /// <param name="token">Personal access token or Actions token with <c>pull-requests: write</c>.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="httpClient"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException"><paramref name="token"/> is <see langword="null"/>, empty, or whitespace.</exception>
     public GitHubPullRequestCommenter(HttpClient httpClient, string token)
     {
+        ArgumentNullException.ThrowIfNull(httpClient);
+        ArgumentException.ThrowIfNullOrWhiteSpace(token);
+
         _httpClient = httpClient;
         _httpClient.BaseAddress ??= new Uri("https://api.github.com/");
 
@@ -72,12 +120,20 @@ public sealed class GitHubPullRequestCommenter : IPullRequestCommenter
     }
 
     /// <inheritdoc />
-    public async Task<Uri> UpsertCommentAsync(PullRequestRef pullRequest, string body, string marker, CancellationToken cancellationToken = default)
+    /// <exception cref="ArgumentNullException"><paramref name="pullRequest"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException"><paramref name="body"/> or <paramref name="marker"/> is <see langword="null"/>, empty, or whitespace.</exception>
+    public Task<Uri> UpsertCommentAsync(PullRequestRef pullRequest, string body, string marker, CancellationToken cancellationToken = default)
     {
+        // Validate synchronously so bad arguments throw at the call site rather than inside the returned task.
         ArgumentNullException.ThrowIfNull(pullRequest);
-        ArgumentNullException.ThrowIfNull(body);
-        ArgumentException.ThrowIfNullOrEmpty(marker);
+        ArgumentException.ThrowIfNullOrWhiteSpace(body);
+        ArgumentException.ThrowIfNullOrWhiteSpace(marker);
 
+        return UpsertCoreAsync(pullRequest, body, marker, cancellationToken);
+    }
+
+    private async Task<Uri> UpsertCoreAsync(PullRequestRef pullRequest, string body, string marker, CancellationToken cancellationToken)
+    {
         // Keep the marker in the body so the next run can find this comment again.
         var payloadBody = body.Contains(marker, StringComparison.Ordinal) ? body : marker + "\n" + body;
 
