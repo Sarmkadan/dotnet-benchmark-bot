@@ -13,6 +13,8 @@ public interface IBenchmarkReportParser
     /// <param name="reportStream">Stream positioned at the beginning of the JSON document.</param>
     /// <param name="cancellationToken">Token to cancel the parse.</param>
     /// <returns>All benchmark measurements found in the report.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="reportStream"/> is <c>null</c>.</exception>
+    /// <exception cref="ArgumentException"><paramref name="reportStream"/> is not readable.</exception>
     Task<IReadOnlyList<BenchmarkResult>> ParseAsync(Stream reportStream, CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -21,6 +23,7 @@ public interface IBenchmarkReportParser
     /// <param name="artifactsDirectory">Path to the <c>BenchmarkDotNet.Artifacts/results</c> directory.</param>
     /// <param name="cancellationToken">Token to cancel the parse.</param>
     /// <returns>All benchmark measurements across all report files.</returns>
+    /// <exception cref="ArgumentException"><paramref name="artifactsDirectory"/> is <c>null</c>, empty, or whitespace.</exception>
     Task<IReadOnlyList<BenchmarkResult>> ParseDirectoryAsync(string artifactsDirectory, CancellationToken cancellationToken = default);
 }
 
@@ -30,7 +33,24 @@ public interface IBenchmarkReportParser
 public sealed class JsonBenchmarkReportParser : IBenchmarkReportParser
 {
     /// <inheritdoc />
-    public async Task<IReadOnlyList<BenchmarkResult>> ParseAsync(Stream reportStream, CancellationToken cancellationToken = default)
+    /// <exception cref="ArgumentNullException"><paramref name="reportStream"/> is <c>null</c>.</exception>
+    /// <exception cref="ArgumentException"><paramref name="reportStream"/> is not readable.</exception>
+    public Task<IReadOnlyList<BenchmarkResult>> ParseAsync(Stream reportStream, CancellationToken cancellationToken = default)
+    {
+        // Validate synchronously so bad arguments throw at the call site, not inside the returned Task.
+        ArgumentNullException.ThrowIfNull(reportStream);
+        if (!reportStream.CanRead)
+        {
+            throw new ArgumentException("Stream must be readable.", nameof(reportStream));
+        }
+
+        return ParseCoreAsync(reportStream, cancellationToken);
+    }
+
+    /// <summary>
+    /// Parses a validated report stream. See <see cref="ParseAsync"/>.
+    /// </summary>
+    private async Task<IReadOnlyList<BenchmarkResult>> ParseCoreAsync(Stream reportStream, CancellationToken cancellationToken)
     {
         using var document = await JsonDocument.ParseAsync(reportStream, cancellationToken: cancellationToken);
         var root = document.RootElement;
@@ -81,8 +101,20 @@ public sealed class JsonBenchmarkReportParser : IBenchmarkReportParser
     }
 
     /// <inheritdoc />
+    /// <exception cref="ArgumentException"><paramref name="artifactsDirectory"/> is <c>null</c>, empty, or whitespace.</exception>
     /// <exception cref="DirectoryNotFoundException">The artifacts directory does not exist.</exception>
-    public async Task<IReadOnlyList<BenchmarkResult>> ParseDirectoryAsync(string artifactsDirectory, CancellationToken cancellationToken = default)
+    public Task<IReadOnlyList<BenchmarkResult>> ParseDirectoryAsync(string artifactsDirectory, CancellationToken cancellationToken = default)
+    {
+        // Validate synchronously so bad arguments throw at the call site, not inside the returned Task.
+        ArgumentException.ThrowIfNullOrWhiteSpace(artifactsDirectory);
+
+        return ParseDirectoryCoreAsync(artifactsDirectory, cancellationToken);
+    }
+
+    /// <summary>
+    /// Parses a validated artifacts directory. See <see cref="ParseDirectoryAsync"/>.
+    /// </summary>
+    private async Task<IReadOnlyList<BenchmarkResult>> ParseDirectoryCoreAsync(string artifactsDirectory, CancellationToken cancellationToken)
     {
         if (!Directory.Exists(artifactsDirectory))
         {
@@ -101,7 +133,7 @@ public sealed class JsonBenchmarkReportParser : IBenchmarkReportParser
             cancellationToken.ThrowIfCancellationRequested();
 
             await using var stream = new FileStream(reportFile, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize: 4096, useAsync: true);
-            foreach (var result in await ParseAsync(stream, cancellationToken))
+            foreach (var result in await ParseCoreAsync(stream, cancellationToken))
             {
                 // The first occurrence wins; later duplicates of the same benchmark are ignored.
                 if (seenFullNames.Add(result.FullName))
