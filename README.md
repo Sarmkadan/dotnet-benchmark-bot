@@ -114,16 +114,115 @@ var result = await pipeline.RunAsync(
 Console.WriteLine(result.CommentUrl?.ToString() ?? "no comment posted");
 ```
 
-### As a GitHub Action (planned)
+## Using in GitHub Actions
+
+The workflow below benchmarks the base branch and the PR head, then hands both result folders to the bot. It runs on `pull_request`, so the comment is posted on the PR itself.
 
 ```yaml
-- uses: Sarmkadan/dotnet-benchmark-bot@v1
-  with:
-    baseline: artifacts/baseline/results
-    candidate: artifacts/pr/results
-    mean-threshold: 0.10
-    github-token: ${{ secrets.GITHUB_TOKEN }}
+name: Benchmarks
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  benchmarks:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      # Benchmark the base branch in a separate worktree next to the checkout.
+      - name: Benchmark base branch
+        run: |
+          git fetch origin ${{ github.base_ref }}
+          git worktree add ../base origin/${{ github.base_ref }}
+          dotnet run -c Release --project ../base/benchmarks -- --exporters json --artifacts artifacts/baseline
+
+      # Benchmark the PR head, which is the current checkout.
+      - name: Benchmark PR head
+        run: dotnet run -c Release --project benchmarks -- --exporters json --artifacts artifacts/pr
+
+      # Coming soon: no dotnet-benchmark-bot CLI is published yet, so this step will fail until it ships.
+      # Until then, call the library from a small console project (see Quick start).
+      - name: Compare and comment (coming soon)
+        run: >
+          dotnet benchmark-bot compare
+          --baseline artifacts/baseline/results
+          --candidate artifacts/pr/results
+          --pr ${{ github.repository }}#${{ github.event.pull_request.number }}
 ```
+
+`--exporters json` writes the `*-report-full.json` files the parser reads. `--artifacts` places them under `results/` inside the folder you pass, which is why the bot paths end in `results`.
+
+### Environment discovery
+
+`GitHubActionsContext.FromEnvironment()` builds a context from the runner's environment variables. It reads:
+
+| Variable | Used for |
+|----------|----------|
+| `GITHUB_ACTIONS` | `IsGitHubActions`, true when the value is `true` |
+| `GITHUB_TOKEN` | `Token`, or `null` when unset or empty |
+| `GITHUB_REPOSITORY` | Owner and repository of `PullRequest` (`owner/repo`) |
+| `GITHUB_REF` | Pull request number when the ref is `refs/pull/{number}/merge` |
+| `GITHUB_EVENT_PATH` | Fallback number from the event payload (`pull_request.number`, or a top-level `number`) |
+
+`PullRequest` is `null` unless the owner, repository and a positive number are all found.
+
+```csharp
+using DotnetBenchmarkBot;
+
+var context = GitHubActionsContext.FromEnvironment();
+if (context.Token is null || context.PullRequest is null)
+{
+    Console.WriteLine("No pull request or token found, skipping the comment.");
+    return;
+}
+```
+
+### Failing the build on regressions
+
+`RegressionGate` evaluates the comparisons from `ThresholdRegressionDetector.Compare` and returns a `RegressionGateResult` with `Passed`, the counted `Regressions` and a `Reason`. Only `Regressed` verdicts count, and ignored benchmarks are removed before counting.
+
+| `RegressionGateOptions` property | Default | Meaning |
+|----------------------------------|---------|---------|
+| `FailOnRegression` | `true` | When `false`, the gate always passes. Regressions are still reported |
+| `MaxAllowedRegressions` | `0` | How many counted regressions are tolerated before the gate fails |
+| `IgnoredBenchmarks` | empty | Full names to skip. An entry matches exactly, or as a prefix when it ends with `*`, e.g. `MyBenchmarks.Parse*` |
+
+```csharp
+using DotnetBenchmarkBot;
+
+var comparisons = new ThresholdRegressionDetector().Compare(baseline, candidate, thresholds);
+
+var gate = new RegressionGate(new RegressionGateOptions
+{
+    MaxAllowedRegressions = 1,
+    IgnoredBenchmarks = new[] { "MyBenchmarks.Serialize*" },
+});
+
+var result = gate.Evaluate(comparisons);
+Console.WriteLine(result.Reason);
+return gate.ToExitCode(result); // 0 when passed, 1 otherwise
+```
+
+Returning a non-zero exit code fails the job, which fails the workflow run.
+
+## Troubleshooting
+
+- **Comment not updated (marker mismatch).** The bot finds its comment by searching existing comment bodies for `Marker` (default `<!-- dotnet-benchmark-bot -->`). If the marker changed between runs, or the marker line was removed from the comment, a new comment is posted instead of updating the old one. Keep `Marker` stable, and restore the line or delete the stale comment.
+- **403 from GitHub (missing `pull-requests: write`).** The comment is written with `GITHUB_TOKEN`, which needs `pull-requests: write` on the job, as in the workflow above. Runs from forked PRs get a read-only token, so they return 403 even when the permission is set.
+- **No reports found (need `--exporters json`, path must be the `results` folder).** The parser only reads `*-report-full.json` files, and only from the directory you pass. Run the benchmarks with `--exporters json`, and point the baseline and candidate paths at `artifacts/baseline/results` and `artifacts/pr/results`, not at `artifacts/baseline` or `artifacts/pr`.
 
 ## Installation
 
