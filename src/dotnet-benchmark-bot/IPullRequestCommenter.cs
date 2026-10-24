@@ -1,3 +1,6 @@
+using System.Net.Http.Headers;
+using System.Text.Json;
+
 namespace DotnetBenchmarkBot;
 
 /// <summary>
@@ -29,13 +32,42 @@ public interface IPullRequestCommenter
 /// </summary>
 public sealed class GitHubPullRequestCommenter : IPullRequestCommenter
 {
+    private static readonly JsonSerializerOptions s_json = new(JsonSerializerDefaults.Web);
+
+    private readonly HttpClient _httpClient;
+
     /// <summary>
     /// Creates a commenter that authenticates with a GitHub token (typically <c>GITHUB_TOKEN</c>).
     /// </summary>
     /// <param name="httpClient">Client used for API calls. Base address defaults to <c>https://api.github.com</c> when unset.</param>
     /// <param name="token">Personal access token or Actions token with <c>pull-requests: write</c>.</param>
     public GitHubPullRequestCommenter(HttpClient httpClient, string token)
-        => throw new NotImplementedException();
+    {
+        _httpClient = httpClient;
+        _httpClient.BaseAddress ??= new Uri("https://api.github.com/");
+
+        var headers = _httpClient.DefaultRequestHeaders;
+        if (!headers.Contains("Accept"))
+        {
+            headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
+        }
+
+        if (!headers.Contains("X-GitHub-Api-Version"))
+        {
+            headers.Add("X-GitHub-Api-Version", "2022-11-28");
+        }
+
+        if (!headers.Contains("User-Agent"))
+        {
+            var version = typeof(GitHubPullRequestCommenter).Assembly.GetName().Version?.ToString() ?? "0.0.0";
+            headers.UserAgent.Add(new ProductInfoHeaderValue("dotnet-benchmark-bot", version));
+        }
+
+        if (headers.Authorization is null)
+        {
+            headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        }
+    }
 
     /// <inheritdoc />
     public Task<Uri> UpsertCommentAsync(PullRequestRef pullRequest, string body, string marker, CancellationToken cancellationToken = default)
